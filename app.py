@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -12,8 +13,29 @@ KEY_FILE = BASE / "key.txt"
 LOG_DIR = BASE / "logs"
 API_URL = "https://9router.leticia.my.id/v1/chat/completions"
 MODELS = ["Free", "Main"]
-VOICEVOX_URL = os.environ.get("VOICEVOX_URL", "http://192.168.101.3:50021")
+TTS_SERVERS = [
+    u.strip()
+    for u in os.environ.get("TTS_SERVERS", "http://192.168.101.2:50021,http://192.168.101.3:50021").split(",")
+    if u.strip()
+]
 VOICEVOX_SPEAKER = int(os.environ.get("VOICEVOX_SPEAKER", "8"))
+_tts = {"u": None, "until": 0.0}
+
+
+def tts_servers():
+    now = time.time()
+    if _tts["until"] > now and _tts["u"]:
+        return [_tts["u"]] + [u for u in TTS_SERVERS if u != _tts["u"]]
+    alive = []
+    for u in TTS_SERVERS:
+        try:
+            if requests.get(f"{u}/version", timeout=2).ok:
+                alive.append(u)
+        except requests.RequestException:
+            pass
+    if alive:
+        _tts.update(u=alive[0], until=now + 60)
+    return alive
 
 SYSTEM = """You are Hana, a friendly Japanese conversation partner for an Indonesian learner (around JLPT N4). The goal is kaiwa renshu.
 
@@ -90,23 +112,27 @@ def tts():
     text = request.args.get("text", "").strip()
     if not text:
         return jsonify(error="kosong"), 400
-    try:
-        q = requests.post(
-            f"{VOICEVOX_URL}/audio_query",
-            params={"text": text, "speaker": VOICEVOX_SPEAKER},
-            timeout=30,
-        )
-        q.raise_for_status()
-        w = requests.post(
-            f"{VOICEVOX_URL}/synthesis",
-            params={"speaker": VOICEVOX_SPEAKER},
-            json=q.json(),
-            timeout=120,
-        )
-        w.raise_for_status()
-        return Response(w.content, mimetype="audio/wav")
-    except Exception as e:
-        return jsonify(error=str(e)), 502
+    last = None
+    for u in tts_servers():
+        try:
+            q = requests.post(
+                f"{u}/audio_query",
+                params={"text": text, "speaker": VOICEVOX_SPEAKER},
+                timeout=15,
+            )
+            q.raise_for_status()
+            w = requests.post(
+                f"{u}/synthesis",
+                params={"speaker": VOICEVOX_SPEAKER},
+                json=q.json(),
+                timeout=180,
+            )
+            w.raise_for_status()
+            _tts.update(u=u, until=time.time() + 60)
+            return Response(w.content, mimetype="audio/wav")
+        except requests.RequestException as e:
+            last = e
+    return jsonify(error=str(last)), 502
 
 
 PAGE = """<!doctype html>
@@ -141,20 +167,31 @@ function add(cls, text){
   const d = document.createElement("div"); d.className = "msg " + cls; d.textContent = text; chat.appendChild(d);
   chat.scrollTop = chat.scrollHeight; return d;
 }
-async function speak(text){
-  if(muted) return;
-  const jp = text.split("\\n").filter(l => l.trim() && !l.startsWith("R:") && !l.startsWith("Koreksi")).join("。");
-  if(!jp) return;
-  try{
-    const res = await fetch("/tts?text=" + encodeURIComponent(jp));
-    if(!res.ok) throw 0;
-    const blob = await res.blob();
+function jpnSentences(text){
+  const joined = text.split("\n").filter(l => l.trim() && !l.startsWith("R:") && !l.startsWith("Koreksi")).join(" ");
+  return (joined.match(/[^。！？]+[。！？]?/g) || []).filter(s => s.trim());
+}
+function fetchTTS(s){ return fetch("/tts?text=" + encodeURIComponent(s.trim())); }
+function playAudio(blob){
+  return new Promise(resolve => {
     if(window.hanaAudio) hanaAudio.pause();
     hanaAudio = new Audio(URL.createObjectURL(blob));
+    hanaAudio.onended = resolve; hanaAudio.onerror = resolve;
     hanaAudio.play();
-  }catch(e){
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(jp); u.lang = "ja-JP"; speechSynthesis.speak(u);
+  });
+}
+async function speak(text){
+  if(muted) return;
+  const sents = jpnSentences(text);
+  let cur = sents.length ? fetchTTS(sents[0]) : null, i = 1;
+  while(cur){
+    const p = cur;
+    const nx = i < sents.length ? fetchTTS(sents[i++]) : null;
+    try{
+      const res = await p;
+      if(res.ok) await playAudio(await res.blob());
+    }catch(e){}
+    cur = nx;
   }
 }
 function mute(){ muted = !muted; document.getElementById("m").textContent = muted ? "🔇" : "🔊"; if(muted) speechSynthesis.cancel(); }
