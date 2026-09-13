@@ -4,6 +4,8 @@ import sys
 
 import paramiko
 
+sys.stdout.reconfigure(encoding="utf-8")
+
 HERE = pathlib.Path(__file__).parent
 LOG = HERE / "debug-logs" / "deploy.txt"
 FILES = ["app.py", "Dockerfile", "docker-compose.yml", "key.txt"]
@@ -58,8 +60,8 @@ def main():
         for cmd in [
             "docker inspect voicevox --format '{{json .NetworkSettings.Ports}}'",
             "curl -s -m 5 'http://192.168.101.3:50021/version'",
-            "curl -s -m 15 'http://192.168.101.3:50021/audio_query?text=hello&speaker=8' | head -c 200",
-            "curl -s -m 15 'http://192.168.101.3:50021/speakers' | head -c 200",
+            "curl -s -m 30 -X POST 'http://192.168.101.3:50021/audio_query?text=hello&speaker=8' | head -c 300",
+            "curl -s -m 15 'http://192.168.101.3:50021/speakers' | head -c 300",
         ]:
             code, out, err = run(cmd)
             log(f"--- {cmd[:50]} ---")

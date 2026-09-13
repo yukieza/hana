@@ -1,16 +1,19 @@
 import json
+import os
 import socket
 from datetime import datetime
 from pathlib import Path
 
 import requests
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 BASE = Path(__file__).parent
 KEY_FILE = BASE / "key.txt"
 LOG_DIR = BASE / "logs"
 API_URL = "https://9router.leticia.my.id/v1/chat/completions"
 MODELS = ["Free", "Main"]
+VOICEVOX_URL = os.environ.get("VOICEVOX_URL", "http://192.168.101.3:50021")
+VOICEVOX_SPEAKER = int(os.environ.get("VOICEVOX_SPEAKER", "8"))
 
 SYSTEM = """You are Hana, a friendly Japanese conversation partner for an Indonesian learner (around JLPT N4). The goal is kaiwa renshu.
 
@@ -82,6 +85,30 @@ def reset():
     return jsonify(ok=True)
 
 
+@app.get("/tts")
+def tts():
+    text = request.args.get("text", "").strip()
+    if not text:
+        return jsonify(error="kosong"), 400
+    try:
+        q = requests.post(
+            f"{VOICEVOX_URL}/audio_query",
+            params={"text": text, "speaker": VOICEVOX_SPEAKER},
+            timeout=30,
+        )
+        q.raise_for_status()
+        w = requests.post(
+            f"{VOICEVOX_URL}/synthesis",
+            params={"speaker": VOICEVOX_SPEAKER},
+            json=q.json(),
+            timeout=120,
+        )
+        w.raise_for_status()
+        return Response(w.content, mimetype="audio/wav")
+    except Exception as e:
+        return jsonify(error=str(e)), 502
+
+
 PAGE = """<!doctype html>
 <html lang="ja">
 <head>
@@ -114,11 +141,21 @@ function add(cls, text){
   const d = document.createElement("div"); d.className = "msg " + cls; d.textContent = text; chat.appendChild(d);
   chat.scrollTop = chat.scrollHeight; return d;
 }
-function speak(text){
+async function speak(text){
   if(muted) return;
   const jp = text.split("\\n").filter(l => l.trim() && !l.startsWith("R:") && !l.startsWith("Koreksi")).join("。");
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(jp); u.lang = "ja-JP"; speechSynthesis.speak(u);
+  if(!jp) return;
+  try{
+    const res = await fetch("/tts?text=" + encodeURIComponent(jp));
+    if(!res.ok) throw 0;
+    const blob = await res.blob();
+    if(window.hanaAudio) hanaAudio.pause();
+    hanaAudio = new Audio(URL.createObjectURL(blob));
+    hanaAudio.play();
+  }catch(e){
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(jp); u.lang = "ja-JP"; speechSynthesis.speak(u);
+  }
 }
 function mute(){ muted = !muted; document.getElementById("m").textContent = muted ? "🔇" : "🔊"; if(muted) speechSynthesis.cancel(); }
 async function send(){
