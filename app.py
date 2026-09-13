@@ -183,6 +183,8 @@ PAGE = """<!doctype html>
 <script>
 const chat = document.getElementById("chat"), t = document.getElementById("t");
 let muted = false;
+function showErr(text){ add("hana", "⚠️ " + text); }
+window.onerror = (m, s, l) => showErr("[js] " + m + " (baris " + l + ")");
 function add(cls, text){
   const d = document.createElement("div"); d.className = "msg " + cls; d.textContent = text; chat.appendChild(d);
   chat.scrollTop = chat.scrollHeight; return d;
@@ -233,13 +235,16 @@ async function toggleMic(){
         const res = await fetch("/stt", {method: "POST", body: fd});
         const data = await res.json();
         if(data.text){ t.value = data.text; send(); }
-        else if(data.error){ alert("STT: " + data.error); }
-      }catch(e){ alert("[error] " + e); }
+        else if(data.error){ showErr("STT: " + data.error); }
+        else { showErr("STT tidak menangkap suara — coba lagi lebih dekat ke mic"); }
+      }catch(e){ showErr("STT: " + e); }
       finally{ btn.textContent = "🎤"; }
     };
     rec.start();
     btn.textContent = "⏹";
-  }catch(e){ alert("[mic] " + e); }
+  }catch(e){
+    showErr("[mic] " + (e.name === "NotAllowedError" ? "akses mic diblokir — ketuk ikon 🔒/ⓘ di address bar → Izin → Mikrofon → Izinkan, lalu muat ulang" : e));
+  }
 }
 async function send(){
   const text = t.value.trim(); if(!text) return; t.value = "";
@@ -255,6 +260,7 @@ async function send(){
 async function reset(){ await fetch("/reset", {method:"POST"}); chat.innerHTML = ""; }
 t.addEventListener("keydown", e => { if(e.key === "Enter") send(); });
 add("hana", "はじめまして！Hana です。今日も いっしょに れんしゅう しよう！\\nR: Hajimemashite! Hana desu. Kyou mo issho ni renshuu shiyou!");
+if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia)) showErr("Browser tidak mendukung mic — pakai Chrome terbaru via https");
 </script>
 </body>
 </html>"""
@@ -262,7 +268,7 @@ add("hana", "はじめまして！Hana です。今日も いっしょに れん
 
 @app.get("/")
 def index():
-    return PAGE
+    return PAGE, 200, {"Cache-Control": "no-cache"}
 
 
 def lan_ip():
