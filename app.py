@@ -19,6 +19,7 @@ TTS_SERVERS = [
     if u.strip()
 ]
 VOICEVOX_SPEAKER = int(os.environ.get("VOICEVOX_SPEAKER", "8"))
+STT_URL = os.environ.get("STT_URL", "http://192.168.101.2:9000")
 _tts = {"u": None, "until": 0.0}
 
 
@@ -135,6 +136,24 @@ def tts():
     return jsonify(error=str(last)), 502
 
 
+@app.post("/stt")
+def stt():
+    f = request.files.get("audio")
+    if not f:
+        return jsonify(error="audio kosong"), 400
+    try:
+        r = requests.post(
+            f"{STT_URL}/asr",
+            params={"output": "json", "language": "ja"},
+            files={"audio_file": (f.filename or "speech.webm", f.read())},
+            timeout=180,
+        )
+        r.raise_for_status()
+        return jsonify(text=(r.json().get("text") or "").strip())
+    except Exception as e:
+        return jsonify(error=str(e)), 502
+
+
 PAGE = """<!doctype html>
 <html lang="ja">
 <head>
@@ -158,6 +177,7 @@ PAGE = """<!doctype html>
 <div id="chat"></div>
 <div id="bar">
  <input id="t" autocomplete="off" placeholder="日本語で書いてね">
+ <button onclick="toggleMic()" id="mic">🎤</button>
  <button onclick="send()">➤</button>
 </div>
 <script>
@@ -195,6 +215,32 @@ async function speak(text){
   }
 }
 function mute(){ muted = !muted; document.getElementById("m").textContent = muted ? "🔇" : "🔊"; if(muted) speechSynthesis.cancel(); }
+let rec = null;
+async function toggleMic(){
+  const btn = document.getElementById("mic");
+  if(rec && rec.state === "recording"){ rec.stop(); return; }
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({audio: true});
+    const chunks = [];
+    rec = new MediaRecorder(stream);
+    rec.ondataavailable = e => chunks.push(e.data);
+    rec.onstop = async () => {
+      stream.getTracks().forEach(x => x.stop());
+      btn.textContent = "…";
+      try{
+        const fd = new FormData();
+        fd.append("audio", new Blob(chunks, {type: rec.mimeType || "audio/webm"}), "speech.webm");
+        const res = await fetch("/stt", {method: "POST", body: fd});
+        const data = await res.json();
+        if(data.text){ t.value = data.text; send(); }
+        else if(data.error){ alert("STT: " + data.error); }
+      }catch(e){ alert("[error] " + e); }
+      finally{ btn.textContent = "🎤"; }
+    };
+    rec.start();
+    btn.textContent = "⏹";
+  }catch(e){ alert("[mic] " + e); }
+}
 async function send(){
   const text = t.value.trim(); if(!text) return; t.value = "";
   add("you", text);
